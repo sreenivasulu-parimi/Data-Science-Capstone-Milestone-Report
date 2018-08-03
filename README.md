@@ -1,4 +1,4 @@
-# Data-Science Capstone Milestone Report
+# Data Science Capstone Milestone Report
 
 Link on <a href="http://rpubs.com/parimi/409637" target="_blank">RPubs</a>
 
