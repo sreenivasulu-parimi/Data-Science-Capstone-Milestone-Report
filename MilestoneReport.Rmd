@@ -1,0 +1,348 @@
+---
+title: "Data Science Capstone Milestone Report"
+author: "Sreenivasulu Parimi"
+date: "July 17, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+
+It is the Milestone Report for the Coursera Data Science Capstone project. In this capstone, we will be applying data science in the area of natural language processing. The project is sponsored by SwiftKey.
+
+The final objective of the project is to create text-prediction application with R Shiny package that predicts words using a natural language processing model i.e. creating an application based on a predictive model for text. Given a word or phrase as input, the application will try to predict the next word. The predictive model will be trained using a corpus, a collection of written texts, called the HC Corpora which has been filtered by language.
+
+But, this milestone report describes the exploratory data analysis of the Capstone Dataset.
+
+The following tasks has been performed for this report.
+
+* Obtaining the data
+* Familiarizing the data with NLP and text mining
+* Cleaning the Data
+* Profanity filtering - removing profanity and other words you do not want to predict
+* Tokenization - identifying appropriate tokens such as words, punctuation, and numbers
+* Exploratory Analysis
+
+## Loading Library
+
+```{r}
+# Preload necessary R librabires
+library(dplyr)
+library(doParallel)
+library(stringi)
+library(SnowballC)
+library(tm)
+# To solve rJava package issues while loading it or Rweka, set the directory of your Java location by setting it before loading the library:
+if(Sys.getenv("JAVA_HOME")!="")
+      Sys.setenv(JAVA_HOME="")
+#options(java.home="C:\\Program Files\\Java\\jre1.8.0_171\\")
+#library(rJava)
+library(RWeka)
+library(ggplot2)
+```
+
+## Download and Import Data
+
+The data is from HC Corpora with access to 4 languages, but only English will be used. The dataset has three files includes **en_US.blogs.txt**, **en_US.news.txt**, and **en_US.twitter.txt**. The data loaded from Coursera Link to local machine and will be read from local disk.
+
+```{r}
+if(!file.exists("Coursera-SwiftKey.zip")) {
+      download.file("https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip", "Coursera-SwiftKey.zip")
+      unzip("Coursera-SwiftKey.zip")
+}
+
+# Read the blogs and twitter files using readLines
+blogs <- readLines("final/en_US/en_US.blogs.txt", warn = FALSE, encoding = "UTF-8")
+twitter <- readLines("final/en_US/en_US.twitter.txt", warn = FALSE, encoding = "UTF-8")
+
+# Read the news file using binary/binomial mode as there are special characters in the text
+con <- file("final/en_US/en_US.news.txt", open="rb")
+news <- readLines(con, encoding = "UTF-8")
+close(con)
+rm(con)
+```
+
+## Original Data/Population Summary Stats
+
+Reading in chunks or lines using R's readLines or scan functions can be useful. You can also loop over each line of text by embedding readLines within a for/while loop, but this may be slower than reading in large chunks at a time.
+
+Calculate some summary stats for each file: Size in Megabytes, number of entries (rows), total characters and length of longest entry.
+
+```{r}
+# Get file sizes
+blogs_size <- file.info("final/en_US/en_US.blogs.txt")$size / 1024 ^ 2
+news_size <- file.info("final/en_US/en_US.news.txt")$size / 1024 ^ 2
+twitter_size <- file.info("final/en_US/en_US.twitter.txt")$size / 1024 ^ 2
+pop_summary <- data.frame('File' = c("Blogs","News","Twitter"),
+                      "FileSizeinMB" = c(blogs_size, news_size, twitter_size),
+                      'NumberofLines' = sapply(list(blogs, news, twitter), function(x){length(x)}),
+                      'TotalCharacters' = sapply(list(blogs, news, twitter), function(x){sum(nchar(x))}),
+                      TotalWords = sapply(list(blogs,news,twitter),stri_stats_latex)[4,],
+                      'MaxCharacters' = sapply(list(blogs, news, twitter), function(x){max(unlist(lapply(x, function(y) nchar(y))))})
+                      )
+
+pop_summary
+```
+
+Above population summary shows that each  file has 200 & below MB and number of words are more than 30 million per file; Twitter is the big file with more lines, and fewer words per line; Blogs is the text file with sentences and has the longest line with 40,833 characters; News is the text file with more long paragraphs.
+This dataset is fairly large. We emphasize that you don't necessarily need to load the entire dataset in to build your algorithms. At least initially, you might want to use a smaller subset of the data.
+
+## Sampling
+
+To build models you don't need to load in and use all of the data. Often relatively few randomly selected rows or chunks need to be included to get an accurate approximation to results that would be obtained using all the data.
+
+A representative sample can be used to infer facts about a population. You might want to create a separate sub-sample dataset by reading in a random subset of the original data and writing it out to a separate file. That way, you can store the sample and not have to recreate it every time. You can use the rbinom function to "flip a biased coin" to determine whether you sample a line of text or not.
+
+Since the data are so big (see above Population summary table) we are only going to proceed with a subset (e,g, 4% of each file) as running the calculations using the big files will be really slow.. Then we are going to clean the data and convert to a corpus.
+
+```{r}
+set.seed(10)
+# Remove all non english characters as they cause issues
+blogs <- iconv(blogs, "latin1", "ASCII", sub="")
+news <- iconv(news, "latin1", "ASCII", sub="")
+twitter <- iconv(twitter, "latin1", "ASCII", sub="")
+
+# Binomial sampling of the data and create the relevant files
+sample <- function(population, percentage) {
+      return(population[as.logical(rbinom(length(population),1,percentage))])
+}
+
+# Set sample percentage
+percent <- 0.04 #If memory issues comes, it needs to be further reduced
+
+samp_blogs   <- sample(blogs, percent)
+samp_news   <- sample(news, percent)
+samp_twitter   <- sample(twitter, percent)
+
+dir.create("sample", showWarnings = FALSE)
+
+#write(samp_blogs, "sample/sample.blogs.txt")
+#write(samp_news, "sample/sample.news.txt")
+#write(samp_twitter, "sample/sample.twitter.txt")
+samp_data <- c(samp_blogs,samp_news,samp_twitter)
+write(samp_data, "sample/sampleData.txt")
+```
+
+### Sample Summary Stats
+
+Calculate some summary stats for each file on sample data.
+
+```{r}
+samp_summary <- data.frame(
+      File = c("blogs","news","twitter"),
+      t(rbind(sapply(list(samp_blogs,samp_news,samp_twitter),stri_stats_general),
+              TotalWords = sapply(list(samp_blogs,samp_news,samp_twitter),stri_stats_latex)[4,]))
+)
+samp_summary
+
+# remove temporary variables
+rm(blogs, news, twitter, samp_blogs, samp_news, samp_twitter, samp_data, pop_summary, samp_summary)
+```
+
+## Data Preprocessing
+
+The final selected text data needs to be cleaned to be used in the word prediction model. We can create a cleaned/tidy corpus file **sampleData** of the text.
+
+### Cleaning the Data
+
+The data can be cleaned using techniues such as removing whitespaces, numbers, URLs, punctuations and profanity  etc.
+
+```{r}
+directory <- file.path(".", "sample")
+#sample_data <- Corpus(DirSource(directory))
+#Used VCorpus to load the data as a corpus since the NGramTokenizer not working as #expected for bigrams and trigrams for the latest version 0.7-5 of tm package.
+sample_data <- VCorpus(DirSource(directory)) # load the data as a corpus
+sample_data <- tm_map(sample_data, content_transformer(tolower))
+
+# Removing Profanity Words using one of the available dictionaries of 1384 words,
+# but removed from it some words which which dont consider profanity.
+profanity_words = readLines("http://www.cs.cmu.edu/~biglou/resources/bad-words.txt")
+profanity_words = profanity_words[-(which(profanity_words%in%c("refugee","reject","remains","screw","welfare","sweetness","shoot","sick","shooting","servant","sex","radical","racial","racist","republican","public","molestation","mexican","looser","lesbian","liberal","kill","killing","killer","heroin","fraud","fire","fight","fairy","^die","death","desire","deposit","crash","^crim","crack","^color","cigarette","church","^christ","canadian","cancer","^catholic","cemetery","buried","burn","breast","^bomb","^beast","attack","australian","balls","baptist","^addict","abuse","abortion","amateur","asian","aroused","angry","arab","bible")==TRUE))]
+sample_data <- tm_map(sample_data,removeWords, profanity_words)
+
+## removing URLs
+removeURL <- function(x) gsub("http[[:alnum:]]*", "", x)
+sample_data <- tm_map(sample_data, content_transformer(removeURL))
+#sample_data[[1]]$content
+
+# Replacing special chars with space
+toSpace <- content_transformer(function(x, pattern) gsub(pattern, " ", x))
+sample_data <- tm_map(sample_data, toSpace, "(f|ht)tp(s?)://(.*)[.][a-z]+")
+sample_data <- tm_map(sample_data, toSpace, "@[^\\s]+")
+sample_data <- tm_map(sample_data, tolower) # convert to lowercase
+#sample_data <- tm_map(sample_data, removeWords, stopwords("en"))#remove english stop words
+sample_data <- tm_map(sample_data, removePunctuation) # remove punctuation
+sample_data <- tm_map(sample_data, removeNumbers) # remove numbers
+sample_data <- tm_map(sample_data, stripWhitespace) # remove extra whitespaces
+#sample_data <- tm_map(sample_data, stemDocument) # initiate stemming
+sample_data <- tm_map(sample_data, PlainTextDocument)
+
+sample_corpus <- data.frame(text=unlist(sapply(sample_data,'[',"content")),stringsAsFactors = FALSE)
+head(sample_corpus)
+```
+
+After the above transformations the first review looks like:
+
+```{r}
+inspect(sample_data[1])
+```
+
+## N-gram Tokenization
+
+Now the corpus **sample_data** has cleaned data. We need to format this cleaned data in to a fromat which is most useful for NLP. The format is N-grams stored in Term Document Matrices or Document Term Matrix. we use a Document Term Matrix (DTM) representation: documents as the rows, terms/words as the columns, frequency of the term in the document as the entries. Because the number of unique words in the corpus the dimension can be large. Ngram models are created to explore word frequences. We can use RWeka package to create unigrams, bigrams, and trigrams.
+
+```{r}
+review_dtm <- DocumentTermMatrix(sample_data)
+review_dtm
+```
+
+### Unigram Analysis
+
+Unigram Analysis shows that which words are the most frequent and what their frequency is. Unigram is based on individual words.
+
+```{r}
+unigramTokenizer <- function(x) {
+      NGramTokenizer(x, Weka_control(min = 1, max = 1))
+}
+
+#unigrams <- TermDocumentMatrix(sample_data, control = list(tokenize = unigramTokenizer))
+unigrams <- DocumentTermMatrix(sample_data, control = list(tokenize = unigramTokenizer))
+```
+
+
+### Bigram Analysis
+
+Bigram Analysis shows that which words are the most frequent and what their frequency is. Bigram is based on two word combinations.
+
+```{r}
+BigramTokenizer <- function(x) {
+      NGramTokenizer(x, Weka_control(min = 2, max = 2))
+}
+
+bigrams <- DocumentTermMatrix(sample_data, control = list(tokenize = BigramTokenizer))
+```
+
+### Trigram Analysis
+
+Trigram Analysis shows that which words are the most frequent and what their frequency is. Trigram is based on three word combinations.
+
+```{r}
+trigramTokenizer <- function(x) {
+      NGramTokenizer(x, Weka_control(min = 3, max = 3))
+}
+
+#trigrams <- TermDocumentMatrix(sample_data, control = list(tokenize = trigramTokenizer))
+trigrams <- DocumentTermMatrix(sample_data, control = list(tokenize = trigramTokenizer))
+```
+
+### Quadgram Analysis
+
+Quadgram Analysis shows that which words are the most frequent and what their frequency is. Quadgram is based on four word combinations.
+
+```{r}
+quadgramTokenizer <- function(x) {
+      NGramTokenizer(x, Weka_control(min = 4, max = 4))
+}
+
+#quadgrams <- TermDocumentMatrix(sample_data, control = list(tokenize = trigramTokenizer))
+quadgrams <- DocumentTermMatrix(sample_data, control = list(tokenize = quadgramTokenizer))
+```
+
+
+
+
+## Exploratory Data Analysis
+
+Now we can perform exploratory analysis on the tidy data. For each Term Document Matrix, we list the most common unigrams, bigrams, trigrams and fourgrams. It would be interesting and helpful to find the most frequently occurring words in the data.
+
+#### Top 10 frequencies of unigrams
+
+```{r}
+unigrams_frequency <- sort(colSums(as.matrix(unigrams)),decreasing = TRUE)
+unigrams_freq_df <- data.frame(word = names(unigrams_frequency), frequency = unigrams_frequency)
+head(unigrams_freq_df, 10)
+```
+
+#### Plot the Unigram frequency
+
+```{r}
+unigrams_freq_df %>%
+      filter(frequency > 3000) %>%
+      ggplot(aes(reorder(word,-frequency), frequency)) +
+      geom_bar(stat = "identity") +
+      ggtitle("Unigrams with frequencies > 3000") +
+      xlab("Unigrams") + ylab("Frequency") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+#### Top 10 frequencies of bigrams
+
+```{r}
+bigrams_frequency <- sort(colSums(as.matrix(bigrams)),decreasing = TRUE)
+bigrams_freq_df <- data.frame(word = names(bigrams_frequency), frequency = bigrams_frequency)
+head(bigrams_freq_df, 10)
+```
+
+Here, create generic function to plot the top 50 frequences for Bigrams and Trigrams.
+
+```{r}
+hist_plot <- function(data, label) {
+      ggplot(data[1:50,], aes(reorder(word, -frequency), frequency)) +
+            labs(x = label, y = "Frequency") +
+            theme(axis.text.x = element_text(angle = 60, size = 12, hjust = 1)) +
+            geom_bar(stat = "identity", fill = I("grey50"))
+}
+```
+
+#### Plot the Bigram frequency
+
+```{r}
+hist_plot(bigrams_freq_df, "50 Most Common Bigrams")
+```
+
+#### Top 10 frequencies of trigrams
+
+```{r}
+trigrams_frequency <- sort(colSums(as.matrix(trigrams)),decreasing = TRUE)
+trigrams_freq_df <- data.frame(word = names(trigrams_frequency), frequency = trigrams_frequency)
+head(trigrams_freq_df, 10)
+```
+
+#### Plot the Trigram frequency
+
+```{r}
+hist_plot(trigrams_freq_df, "50 Most Common Trigrams")
+```
+
+#### Top 10 frequencies of quadgrams
+
+```{r}
+quadgrams_frequency <- sort(colSums(as.matrix(quadgrams)),decreasing = TRUE)
+quadgrams_freq_df <- data.frame(word = names(quadgrams_frequency), frequency = quadgrams_frequency)
+head(quadgrams_freq_df, 10)
+```
+
+#### Plot the Quadgram frequency
+
+```{r}
+hist_plot(quadgrams_freq_df, "50 Most Common Quadgrams")
+```
+
+
+## Summary of Findings
+
+Building N-grams takes some time, even when downsampling to 2%. Caching helps to speed the process up when run the next time (cache = TRUE).
+
+The longer the N-grams, the lower their abundance (e.g. the most abundant Bigrams frequency is 14485, the most abundant Trigrams frequency is 1135 and that of the most abundant Quadgrams frequency is 241).
+
+## Further Actions
+
+It concludes the exploratory analysis. As a further step a model will be created and integrated into a Shiny app for word prediction.
+
+The corpus has been converted to N-grams stored in Document Term Matrix (DTM) and then converted to data frames of frequencies. This format should be useful for predicting the next word in a sequence of words. For example, when looking at a string of 3 words the most likely next word can be guessed by investigating all 4-grams starting with these three words and chosing the most frequent one.
+
+For the Shiny applicaiton, the plan is to create an application with a simple interface where the user can enter a string of text. Our prediction model will then give a list of suggested words to update the next word.
